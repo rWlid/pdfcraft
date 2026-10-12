@@ -354,6 +354,9 @@ pub struct DocView {
     pub(crate) text_failed: HashSet<usize>,
     pub find: Option<Find>,
     selection: Option<Selection>,
+    /// The drag in progress started a text selection: the wheel scrolls the page during it
+    /// (#721), which egui's scroll area refuses while anything is dragged.
+    selection_drag: bool,
     /// Clicks in the current run on the text layer: two select a word, three the line, four the page.
     clicks: u32,
     last_press_time: f64,
@@ -613,6 +616,7 @@ impl DocView {
             find: None,
             selection: None,
             clicks: 0,
+            selection_drag: false,
             last_press_time: 0.0,
             last_press_pos: None,
             last_queue: Vec::new(),
@@ -2377,6 +2381,10 @@ pub fn document_area(app: &mut PdfCraftApp, index: usize, ui: &mut egui::Ui) {
             ui.scroll_with_delta_animation(delta, egui::style::ScrollAnimation::none());
         }
         let (resp_rect, resp) = ui.allocate_exact_size(vec2(content_w, content_h), Sense::click_and_drag());
+        // A drag lasts only while egui reports it, so the mark can't outlive one.
+        if !resp.dragged() {
+            view.selection_drag = false;
+        }
         // The Hand tool pans: the content widget takes every drag, so scroll by its delta.
         if hand {
             if resp.dragged() {
@@ -2789,6 +2797,8 @@ pub fn document_area(app: &mut PdfCraftApp, index: usize, ui: &mut egui::Ui) {
                         }
                     }
                     if resp.drag_started() && press_here && !over_link {
+                        // Every drag that starts on text, after quick clicks too.
+                        view.selection_drag = true;
                         let origin = ui.input(|inp| inp.pointer.press_origin()).unwrap_or(p);
                         let (ox, oy) = xf.screen_to_view(origin);
                         if view.clicks < 2 {
@@ -2977,6 +2987,17 @@ pub fn document_area(app: &mut PdfCraftApp, index: usize, ui: &mut egui::Ui) {
                 } else {
                     view.flash = None;
                 }
+            }
+        }
+        // egui's scroll area ignores the wheel while anything is dragged, so a text-selection drag
+        // scrolls the page itself (#721) and the selection follows the pointer on the next frame.
+        // Only over the document (margins and gaps included), since the wheel scrolls what is under
+        // the pointer; Command/Ctrl-wheel zooms instead.
+        if view.selection_drag && ui.rect_contains_pointer(avail) {
+            let wheel =
+                ui.input_mut(|i| if i.modifiers.command || i.modifiers.ctrl { Vec2::ZERO } else { std::mem::take(&mut i.smooth_scroll_delta) });
+            if wheel != Vec2::ZERO {
+                ui.scroll_with_delta_animation(wheel, egui::style::ScrollAnimation::none());
             }
         }
         // The page navigated to stays current while no page shows more of itself, so the next
